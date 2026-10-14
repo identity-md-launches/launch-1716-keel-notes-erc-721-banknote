@@ -1,0 +1,14 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "KeelNoteArt",
+      "constructorArgs": []
+    },
+    {
+      "contract": "KeelNotes",
+      "constructorArgs": ["$owner", "$contract:KeelNoteArt"]
+    }
+  ],
+  "notes": "KeelNoteArt provides on-chain SVG artwork. KeelNotes is the Keel Notes (KNOTE) ERC-721 collection, with a lifetime mint cap of 1111 and a lifetime Gold cap of 111. Deploy the renderer first, then KeelNotes with $owner as its Ownable2Step owner and the renderer as its art contract. Minting starts closed; the owner must set the permanent Keel token and a pass signer before opening minting. IMD rewards remain with each note until its owner redeems and burns it. This launch deploys only these two application contracts, with no ERC-20, pool, liquidity, ETH funding, or initialization calls."
+}
