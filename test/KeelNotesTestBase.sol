@@ -70,11 +70,16 @@ abstract contract KeelNotesTestBase is Test {
     }
 
     function _mintTo(address to) internal returns (uint256 id) {
-        keel.mint(to, MINIMUM);
-        uint256 deadline = block.timestamp + 1 days;
-        bytes memory sig = _signature(notes, to, MINIMUM, deadline, SIGNER_KEY);
+        (uint256 deadline, bytes memory sig) = _preparePass(to);
         vm.prank(to);
         id = notes.mint(MINIMUM, deadline, sig);
+    }
+
+    /// @dev Funds the wallet's Keel balance and signs its pass, so the mint call itself can be observed.
+    function _preparePass(address to) internal returns (uint256 deadline, bytes memory sig) {
+        keel.mint(to, MINIMUM);
+        deadline = block.timestamp + 1 days;
+        sig = _signature(notes, to, MINIMUM, deadline, SIGNER_KEY);
     }
 
     function _project(address creator, string memory symbol) internal returns (address token) {

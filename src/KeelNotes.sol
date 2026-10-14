@@ -82,10 +82,13 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
     error IncompletePayment();
     error IMDRescueForbidden();
     error OnlySelf();
+    error InvalidKeelToken();
+    error TransferToCollection();
 
     event NoteMinted(address indexed to, uint256 indexed noteId, uint64 mintedAt);
     event NoteUpgraded(uint256 indexed noteId, address indexed creator, address indexed backedToken, string symbol);
     event Funded(address indexed caller, uint256 amount, uint256 accPerWeight, bool surplus);
+    event SurplusStranded(uint256 amount);
     event NoteRedeemed(address indexed owner, uint256 indexed noteId, uint256 amount);
     event KeelTokenSet(address indexed token);
     event PassSignerSet(address indexed previousSigner, address indexed newSigner);
@@ -102,6 +105,10 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
     function setKeelToken(address token) external onlyOwner {
         if (keelToken != address(0)) revert KeelTokenAlreadySet();
         if (token == address(0)) revert ZeroAddress();
+        // Permanent setting: refuse an address that cannot answer the balance query mint() depends on.
+        if (token.code.length == 0) revert InvalidKeelToken();
+        (bool ok, bytes memory answer) = token.staticcall(abi.encodeCall(IERC20.balanceOf, (address(this))));
+        if (!ok || answer.length < 32) revert InvalidKeelToken();
         keelToken = token;
         emit KeelTokenSet(token);
     }
@@ -152,6 +159,7 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
         }
         if (IERC20(keelToken).balanceOf(msg.sender) < minKeel) revert InsufficientKeel();
 
+        _syncSurplus();
         hasMinted[msg.sender] = true;
         noteId = ++totalMinted;
         Note storage note = _notes[noteId];
@@ -176,6 +184,7 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
         if (!IKeelFactory(KEEL_FACTORY).isLaunched(token)) revert NotLaunched();
         if (IKeelVault(KEEL_VAULT).project(token).creator != msg.sender) revert NotProjectCreator();
 
+        _syncSurplus();
         // Preserve Standard earnings, including sub-wei fractions, before increasing the weight.
         (note.accrued, note.fraction) = _earned(note);
         note.checkpoint = accPerWeight;
@@ -222,11 +231,12 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
         _credit(afterBalance - beforeBalance, false);
     }
 
+    /// @notice Credits IMD sent directly to the live weights. A no-op when nothing is uncredited, because
+    /// every mint, upgrade and redemption already credits what arrived before it.
     function creditSurplus() external nonReentrant {
         if (totalWeight == 0) revert NoWeight();
-        uint256 balance = IERC20(IMD).balanceOf(address(this));
-        if (balance < liabilities) revert Insolvent();
-        _credit(balance - liabilities, true);
+        if (IERC20(IMD).balanceOf(address(this)) < liabilities) revert Insolvent();
+        _syncSurplus();
     }
 
     function _credit(uint256 received, bool surplus) private {
@@ -236,8 +246,26 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
         emit Funded(msg.sender, received, accPerWeight, surplus);
     }
 
+    /// @dev Credits directly transferred IMD to the weights that were live when it arrived, so a mint,
+    /// upgrade or redemption that changes the weight set can neither take nor forfeit earlier IMD.
+    /// IMD that arrives while no note is live belongs to no note: it is reserved permanently rather
+    /// than handed to whichever wallet mints next. A balance below the reserve is left to the
+    /// explicit funding paths and the redemption check, so an external shortfall never blocks redeem.
+    function _syncSurplus() private {
+        uint256 balance = IERC20(IMD).balanceOf(address(this));
+        if (balance <= liabilities) return;
+        uint256 surplus = balance - liabilities;
+        if (totalWeight == 0) {
+            liabilities = balance;
+            emit SurplusStranded(surplus);
+            return;
+        }
+        _credit(surplus, true);
+    }
+
     function redeem(uint256 noteId) external nonReentrant {
         if (_requireOwned(noteId) != msg.sender) revert NotNoteOwner();
+        _syncSurplus();
         Note storage note = _notes[noteId];
         (uint256 amount,) = _earned(note);
         if (amount == 0) revert NoRewards();
@@ -303,6 +331,12 @@ contract KeelNotes is ERC721, Ownable2Step, EIP712, ReentrancyGuard {
             IERC20Metadata(IMD).decimals(),
             note.mintedAt
         );
+    }
+
+    /// @dev The collection can never call its own redeem, so a note it held would be dead weight forever.
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        if (to == address(this)) revert TransferToCollection();
+        return super._update(to, tokenId, auth);
     }
 
     function _weight(Level level) private pure returns (uint256) {

@@ -3,7 +3,7 @@ pragma solidity 0.8.26;
 
 import {KeelNotesTestBase} from "./KeelNotesTestBase.sol";
 import {KeelNotes} from "../src/KeelNotes.sol";
-import {MockToken, RevertingSymbol, MalformedSymbol, ExpensiveSymbol, HugeSymbol} from "./mocks/Mocks.sol";
+import {MockToken, RevertingSymbol, MalformedSymbol, ExpensiveSymbol, HugeSymbol, WideVault} from "./mocks/Mocks.sol";
 
 contract GoldTest is KeelNotesTestBase {
     function test_goldEngravesTokenAndSymbolOnce() public {
@@ -112,6 +112,30 @@ contract GoldTest is KeelNotesTestBase {
         _checkBroken(address(new ExpensiveSymbol()));
         _checkBroken(address(new HugeSymbol()));
         _checkBroken(makeAddr("token without metadata code"));
+    }
+
+    /// The live vault answers 15 words where the supplied ABI declares 14; the creator must still decode.
+    function test_vaultReturningExtraTrailingWordStillQualifiesCreator() public {
+        vm.etch(notes.KEEL_VAULT(), address(new WideVault()).code);
+        WideVault wide = WideVault(notes.KEEL_VAULT());
+        (bool ok, bytes memory raw) =
+            notes.KEEL_VAULT().staticcall(abi.encodeWithSignature("project(address)", address(keel)));
+        assertTrue(ok);
+        assertEq(raw.length, 15 * 32);
+        _mintTo(alice);
+        address token = address(new MockToken());
+        factory.setLaunched(token, true);
+        wide.setCreator(token, bob);
+        vm.prank(alice);
+        vm.expectRevert(KeelNotes.NotProjectCreator.selector);
+        notes.upgradeToGold(1, token);
+        wide.setCreator(token, alice);
+        vm.prank(alice);
+        notes.upgradeToGold(1, token);
+        (KeelNotes.Level level, uint256 weight, address backing,,,) = notes.noteInfo(1);
+        assertEq(uint256(level), uint256(KeelNotes.Level.Gold));
+        assertEq(weight, 5);
+        assertEq(backing, token);
     }
 
     function test_symbolDecoderOnlySelf() public {

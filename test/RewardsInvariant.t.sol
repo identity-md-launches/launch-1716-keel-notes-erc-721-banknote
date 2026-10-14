@@ -24,6 +24,7 @@ contract RewardHandler is Test {
     uint256 public credited;
     uint256 public paid;
     uint256 public uncredited;
+    uint256 public stranded;
     mapping(uint256 => uint256) public modelScaled;
     mapping(uint256 => uint256) public weights;
     mapping(uint256 => address) public holder;
@@ -47,6 +48,7 @@ contract RewardHandler is Test {
         if (mintedWallet[to]) return;
         keel.mint(to, 1);
         signer.permit(notes.mintPassDigest(to, 1, block.timestamp), hex"123456");
+        _sync();
         vm.prank(to);
         uint256 id = notes.mint(1, block.timestamp, hex"123456");
         assertEq(id, ++minted);
@@ -73,10 +75,9 @@ contract RewardHandler is Test {
     }
 
     function credit() external {
-        if (weight == 0 || uncredited == 0) return;
+        if (weight == 0) return;
         notes.creditSurplus();
-        _credit(uncredited);
-        uncredited = 0;
+        _sync();
     }
 
     function upgrade(uint256 seed) external {
@@ -86,6 +87,7 @@ contract RewardHandler is Test {
         address backing = address(uint160(0x90000 + id));
         factory.setLaunched(backing, true);
         vault.setCreator(backing, holder[id]);
+        _sync();
         vm.prank(holder[id]);
         notes.upgradeToGold(id, backing);
         weights[id] = 5;
@@ -108,8 +110,11 @@ contract RewardHandler is Test {
         if (minted == 0) return;
         uint256 id = 1 + seed % minted;
         if (weights[id] == 0) return;
-        uint256 amount = modelScaled[id] / SCALE;
+        // Redemption credits the uncredited IMD first; a zero claim after that reverts and syncs nothing.
+        uint256 amount = (modelScaled[id] + weights[id] * (uncredited * SCALE / weight)) / SCALE;
         if (amount == 0) return;
+        _sync();
+        assertEq(modelScaled[id] / SCALE, amount, "predicted claim matches the synced ledger");
         address to = holder[id];
         uint256 beforeBalance = imd.balanceOf(to);
         vm.prank(to);
@@ -120,6 +125,18 @@ contract RewardHandler is Test {
         weights[id] = 0;
         holder[id] = address(0);
         ++burned;
+    }
+
+    /// @dev Mirrors the collection: IMD that arrived is credited to the live weights before any weight
+    /// change, and IMD that arrived while no note was live is reserved for nobody.
+    function _sync() private {
+        if (uncredited == 0) return;
+        if (weight == 0) {
+            stranded += uncredited;
+        } else {
+            _credit(uncredited);
+        }
+        uncredited = 0;
     }
 
     function _credit(uint256 amount) private {
@@ -162,8 +179,11 @@ contract RewardsInvariantTest is KeelNotesTestBase {
         }
         assertGe(notes.liabilities(), allClaims);
         assertGe(imd.balanceOf(address(notes)), notes.liabilities());
-        assertEq(notes.liabilities(), handler.credited() - handler.paid());
-        assertEq(imd.balanceOf(address(notes)), handler.credited() + handler.uncredited() - handler.paid());
+        assertEq(notes.liabilities(), handler.credited() + handler.stranded() - handler.paid());
+        assertEq(
+            imd.balanceOf(address(notes)),
+            handler.credited() + handler.stranded() + handler.uncredited() - handler.paid()
+        );
     }
 
     function invariant_lifetimeLimitsWeightsAndOwners() public view {

@@ -122,6 +122,26 @@ contract MockVault is IKeelVault {
     }
 }
 
+/// @dev Answers project(address) with the 15-word layout the live Ethereum KeelVault returns:
+/// the supplied 14-word struct followed by one extra uint256 word.
+contract WideVault {
+    mapping(address => address) public creators;
+
+    function setCreator(address token, address creator) external {
+        creators[token] = creator;
+    }
+
+    function project(address token) external view {
+        bytes memory words = abi.encode(
+            creators[token], uint8(0), true, uint16(8000), uint64(1_791_677_931), uint64(0), 0, 0, 0, 0, 0, 0, 0
+        );
+        bytes memory encoded = abi.encodePacked(words, bytes32(uint256(7)), bytes32(uint256(7)));
+        assembly ("memory-safe") {
+            return(add(encoded, 32), mload(encoded))
+        }
+    }
+}
+
 contract Mock1271 is IERC1271 {
     mapping(bytes32 => bytes32) private _signatures;
     bool public revoked;

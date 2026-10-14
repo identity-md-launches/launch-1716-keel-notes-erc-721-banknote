@@ -6,7 +6,11 @@ interface IKeelFactory {
 }
 
 interface IKeelVault {
-    // The field order and types are the fixed KeelVault ABI. Only creator is used.
+    // The field order and types are the KeelVault ABI as supplied by the task. Only creator is used.
+    // The live Ethereum vault (0xe2fb...013c) returns one extra uint256 word (15 words, 480 bytes)
+    // after this 14-word layout. Solidity ignores trailing return data, so this shorter declaration
+    // decodes both layouts. Do not lengthen it or add a returndatasize equality check: a vault
+    // answering exactly 14 words would then make every Gold upgrade revert.
     struct Project {
         address creator;
         uint8 status;

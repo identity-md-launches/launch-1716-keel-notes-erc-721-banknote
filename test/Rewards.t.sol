@@ -148,7 +148,14 @@ contract RewardsTest is KeelNotesTestBase {
         imd.mint(address(notes), 100);
         vm.expectRevert(KeelNotes.NoWeight.selector);
         notes.creditSurplus();
-        _mintTo(alice);
+        // IMD that arrived while no note was live is reserved by the first mint, not handed to the minter.
+        (uint256 deadline, bytes memory sig) = _preparePass(alice);
+        vm.expectEmit(true, true, true, true, address(notes));
+        emit KeelNotes.SurplusStranded(100);
+        vm.prank(alice);
+        notes.mint(MINIMUM, deadline, sig);
+        assertEq(notes.liabilities(), 100);
+        assertEq(notes.pending(1), 0);
         vm.expectRevert(KeelNotes.ZeroReceived.selector);
         notes.fund(0);
         imd.setFee(10_000);
@@ -156,8 +163,9 @@ contract RewardsTest is KeelNotesTestBase {
         imd.approve(address(notes), 10);
         vm.expectRevert(KeelNotes.ZeroReceived.selector);
         notes.fund(10);
-        assertEq(notes.liabilities(), 0);
+        assertEq(notes.liabilities(), 100);
         assertEq(imd.balanceOf(address(this)), 10);
+        _assertSolvent();
     }
 
     function test_incomingTransferFeeCreditsOnlyReceived() public {
@@ -181,8 +189,10 @@ contract RewardsTest is KeelNotesTestBase {
         notes.creditSurplus();
         assertEq(notes.pending(1), 23 ether);
         assertEq(notes.liabilities(), 23 ether);
-        vm.expectRevert(KeelNotes.ZeroReceived.selector);
+        // Nothing left to credit: a repeated call is a harmless no-op that changes no accounting.
         notes.creditSurplus();
+        assertEq(notes.pending(1), 23 ether);
+        assertEq(notes.liabilities(), 23 ether);
         _mintTo(bob);
         assertEq(notes.pending(2), 0);
         _assertSolvent();
@@ -204,8 +214,9 @@ contract RewardsTest is KeelNotesTestBase {
         assertEq(imd.balanceOf(address(notes)), 1);
         _mintTo(makeAddr("future minter"));
         assertEq(notes.pending(4), 0);
-        vm.expectRevert(KeelNotes.ZeroReceived.selector);
         notes.creditSurplus();
+        assertEq(notes.pending(4), 0);
+        assertEq(notes.liabilities(), 1);
         _fund(1);
         assertEq(notes.pending(4), 1);
         _assertSolvent();
@@ -329,6 +340,27 @@ contract RewardsTest is KeelNotesTestBase {
         notes.safeTransferFrom(alice, address(0), 1);
         assertEq(notes.totalBurned(), 0);
         assertEq(notes.ownerOf(1), alice);
+    }
+
+    function test_noteCannotBeTransferredToTheCollection() public {
+        _mintTo(alice);
+        _mintTo(bob);
+        vm.prank(alice);
+        notes.approve(carol, 1);
+        vm.startPrank(alice);
+        vm.expectRevert(KeelNotes.TransferToCollection.selector);
+        notes.transferFrom(alice, address(notes), 1);
+        vm.expectRevert(KeelNotes.TransferToCollection.selector);
+        notes.safeTransferFrom(alice, address(notes), 1);
+        vm.stopPrank();
+        vm.prank(carol);
+        vm.expectRevert(KeelNotes.TransferToCollection.selector);
+        notes.transferFrom(alice, address(notes), 1);
+        assertEq(notes.ownerOf(1), alice);
+        assertEq(notes.totalWeight(), 2);
+        vm.prank(alice);
+        notes.transferFrom(alice, carol, 1);
+        assertEq(notes.ownerOf(1), carol);
     }
 
     function test_rescueOnlyOwnerAndNeverIMD() public {

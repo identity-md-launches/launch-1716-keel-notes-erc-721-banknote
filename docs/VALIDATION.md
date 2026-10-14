@@ -5,10 +5,11 @@ Validated with Foundry **1.8.5** and the repository-pinned Solidity **0.8.26** c
 | Check | Result |
 | --- | --- |
 | `forge build --sizes` | Passed |
-| Seeded `forge test` | 60 tests passed, no failures or skips |
+| Seeded `forge test` | 71 tests passed, no failures or skips |
 | `forge fmt --check` | Passed |
 | Clean-copy `forge build --offline` | Passed |
-| Clean-copy seeded `forge test --offline` | 60 tests passed |
+| Clean-copy seeded `forge test --offline` | 71 tests passed |
+| Reviewer proof `Proof_ad8e44fd7c07.t.sol` (surplus timing) | Failed on the starting tree, passes after the revision |
 | Clean-copy formatting and vendored-file checksums | Passed |
 | Generated Standard and Gold SVGs | Valid XML; 36 seed-derived ellipses each; internal references only |
 
@@ -18,13 +19,13 @@ The clean copy contained the delivered sources, tests, libraries, documentation,
 FOUNDRY_FUZZ_SEED=0x485f8d7d32111fc48577652b8f1994903cbeb0b387deb8f8dfdab3ee24cab200
 ```
 
-The suite comprises 17 mint/configuration tests, 9 Gold tests, 25 reward/safety tests, 8 artwork/deployment tests, and one grouped invariant campaign with two invariant checks. Three fuzz tests run 512 cases each. The invariant campaign ran 128 sequences of 64 operations: **8,192 calls, zero reverts**, checking solvency, exact reference-ledger claims, ownership, weights, lifetime mint flags, and counters after mixed mint/fund/donate/credit/upgrade/transfer/redeem operations.
+The suite comprises 17 mint/configuration tests, 10 Gold tests, 26 reward/safety tests, 9 surplus-timing tests, 8 artwork/deployment tests, and one grouped invariant campaign with two invariant checks. Four fuzz tests run 512 cases each. The invariant campaign ran 128 sequences of 64 operations: **8,192 calls, zero reverts**, checking solvency, exact reference-ledger claims, ownership, weights, lifetime mint flags, and counters after mixed mint/fund/donate/credit/upgrade/transfer/redeem operations; the reference ledger credits donations at the same moments the collection does and tracks stranded pre-mint deposits separately.
 
 Final application runtime sizes:
 
 | Contract | Runtime bytes |
 | --- | ---: |
-| `KeelNotes` | 12,390 |
+| `KeelNotes` | 12,742 |
 | `KeelNoteArt` | 10,747 |
 
 Both are below 24,000 bytes, have no unresolved library links, and pass the PUSH-aware forbidden-opcode scan. Constructors are exercised together through a factory probe with no code at the fixed external integration addresses.

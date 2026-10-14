@@ -37,7 +37,15 @@ contract MintAndConfigTest is KeelNotesTestBase {
         fresh.setMintOpen(true);
         vm.expectRevert(KeelNotes.ZeroAddress.selector);
         fresh.setKeelToken(address(0));
+        // The permanent setting refuses an address that cannot answer balanceOf: no code, or code
+        // without the ERC-20 query. Reverting here keeps the owner able to set the right token later.
+        vm.expectRevert(KeelNotes.InvalidKeelToken.selector);
+        fresh.setKeelToken(makeAddr("keel not deployed"));
+        vm.expectRevert(KeelNotes.InvalidKeelToken.selector);
+        fresh.setKeelToken(address(art));
+        assertEq(fresh.keelToken(), address(0));
         fresh.setKeelToken(address(keel));
+        assertEq(fresh.keelToken(), address(keel));
         vm.expectRevert(KeelNotes.KeelTokenAlreadySet.selector);
         fresh.setKeelToken(address(keel));
         vm.expectRevert(KeelNotes.PassSignerNotSet.selector);
