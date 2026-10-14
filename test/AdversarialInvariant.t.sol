@@ -22,6 +22,7 @@ contract AdversarialHandler is Test {
     uint256 public credited;
     uint256 public paid;
     uint256 public uncredited;
+    uint256 public stranded;
     uint256 public credits;
     uint256 public gold;
     uint256 public burned;
@@ -61,6 +62,19 @@ contract AdversarialHandler is Test {
         }
     }
 
+    /// @dev Mirrors the collection's surplus sync: every mint, upgrade and redemption first credits IMD that
+    /// was sent directly to the weights live at that moment, or reserves it for nobody when none is live.
+    function _sync() private {
+        if (uncredited == 0) return;
+        if (notes.totalWeight() == 0) {
+            stranded += uncredited;
+        } else {
+            credited += uncredited;
+            ++credits;
+        }
+        uncredited = 0;
+    }
+
     // ---------------- honest actions ----------------
 
     function mint(uint256 actorSeed) public {
@@ -68,6 +82,7 @@ contract AdversarialHandler is Test {
         if (notes.hasMinted(to)) return;
         keel.mint(to, 1);
         bytes memory sig = _pass(to, 1, block.timestamp);
+        _sync();
         vm.prank(to);
         notes.mint(1, block.timestamp, sig);
     }
@@ -91,16 +106,15 @@ contract AdversarialHandler is Test {
 
     function creditSurplus() external {
         if (notes.totalWeight() == 0) return;
+        uint256 liabilitiesBefore = notes.liabilities();
+        uint256 accBefore = notes.accPerWeight();
+        notes.creditSurplus();
         if (uncredited == 0) {
-            vm.expectRevert(KeelNotes.ZeroReceived.selector);
-            notes.creditSurplus();
-            ++hostileReverts;
+            assertEq(notes.liabilities(), liabilitiesBefore, "crediting nothing changes nothing");
+            assertEq(notes.accPerWeight(), accBefore, "crediting nothing changes nothing");
             return;
         }
-        notes.creditSurplus();
-        credited += uncredited;
-        uncredited = 0;
-        ++credits;
+        _sync();
     }
 
     function upgrade(uint256 seed) public {
@@ -125,9 +139,17 @@ contract AdversarialHandler is Test {
             ++hostileReverts;
             return;
         }
+        bool surplusPending = uncredited > 0;
         vm.prank(holder);
         notes.upgradeToGold(id, token);
-        assertEq(notes.pending(id), pendingBefore, "upgrade settles without gain or loss");
+        if (surplusPending) {
+            // The upgrade credits the direct IMD at weight 1 before raising the weight, so the note gains
+            // its Standard share and nothing is lost.
+            assertGe(notes.pending(id), pendingBefore, "upgrade never loses settled rewards");
+        } else {
+            assertEq(notes.pending(id), pendingBefore, "upgrade settles without gain or loss");
+        }
+        _sync();
         backing[id] = token;
         ++gold;
     }
@@ -136,7 +158,10 @@ contract AdversarialHandler is Test {
     function upgradeMany(uint256 seed, uint8 count) external {
         uint256 n = bound(count, 1, 40);
         for (uint256 i; i < n; ++i) {
-            upgrade(seed + i);
+            // The seed only selects a note; let it wrap so a max-uint256 seed cannot panic the handler.
+            unchecked {
+                upgrade(seed + i);
+            }
         }
     }
 
@@ -154,7 +179,7 @@ contract AdversarialHandler is Test {
         (uint256 id, address holder, bool ok) = _live(seed);
         if (!ok) return;
         uint256 amount = notes.pending(id);
-        if (amount == 0) {
+        if (amount == 0 && uncredited == 0) {
             vm.prank(holder);
             vm.expectRevert(KeelNotes.NoRewards.selector);
             notes.redeem(id);
@@ -163,9 +188,28 @@ contract AdversarialHandler is Test {
         }
         uint256 before = imd.balanceOf(holder);
         vm.prank(holder);
-        notes.redeem(id);
-        assertEq(imd.balanceOf(holder) - before, amount, "redemption pays exactly pending");
-        paid += amount;
+        if (amount == 0) {
+            // Only direct IMD is outstanding: the redemption credits it first and pays the note's share,
+            // or reverts whole (sync included) when that share rounds to nothing.
+            try notes.redeem(id) {}
+            catch (bytes memory err) {
+                assertEq(bytes4(err), KeelNotes.NoRewards.selector, "only NoRewards may stop a holder");
+                assertEq(notes.ownerOf(id), holder, "a reverted redemption keeps the note");
+                ++hostileReverts;
+                return;
+            }
+        } else {
+            notes.redeem(id);
+        }
+        uint256 received = imd.balanceOf(holder) - before;
+        if (uncredited == 0) {
+            assertEq(received, amount, "redemption pays exactly pending");
+        } else {
+            assertGe(received, amount, "redemption pays at least the credited pending");
+            assertGt(received, 0, "a redemption that burns always pays");
+        }
+        _sync();
+        paid += received;
         ++burned;
     }
 
@@ -372,12 +416,24 @@ contract AdversarialInvariantTest is KeelNotesTestBase {
     function invariant_conservationAndBoundedDust() public view {
         (uint256 owed, uint256 live,) = _sumPending();
         uint256 held = imd.balanceOf(address(notes));
-        assertEq(notes.liabilities(), handler.credited() - handler.paid(), "liabilities track credits minus payouts");
-        assertEq(held, handler.credited() + handler.uncredited() - handler.paid(), "every IMD wei accounted");
+        assertEq(
+            notes.liabilities(),
+            handler.credited() + handler.stranded() - handler.paid(),
+            "liabilities track credits plus stranded IMD minus payouts"
+        );
+        assertEq(
+            held,
+            handler.credited() + handler.stranded() + handler.uncredited() - handler.paid(),
+            "every IMD wei accounted"
+        );
         assertGe(held, notes.liabilities(), "balance covers liabilities");
         assertGe(notes.liabilities(), owed, "liabilities cover every claim");
         // Holders lose at most rounding dust: < 1 wei per credit, per live note and per redemption.
-        assertLe(notes.liabilities() - owed, handler.credits() + live + handler.burned(), "dust is bounded");
+        assertLe(
+            notes.liabilities() - owed,
+            handler.credits() + live + handler.burned() + handler.stranded(),
+            "dust is bounded"
+        );
         assertEq(address(notes).balance, 0, "no ETH ever held");
         assertEq(handler.stray().balanceOf(address(notes)), handler.strayHeld(), "rescue moves only what it says");
     }
